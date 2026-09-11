@@ -1,37 +1,12 @@
 {
-  "name": "react-example",
+  "name": "user-auth-service",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
-    "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "echo 'No TypeScript files to lint'"
-  },
-  "dependencies": {
-    "@google/genai": "^2.4.0",
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
-    "dotenv": "^17.2.3",
-    "express": "^4.21.2",
-    "jszip": "^3.10.2",
-    "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
-    "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
-  },
-  "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/jszip": "^3.4.1",
-    "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
-    "esbuild": "^0.25.0",
-    "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "dev": "node -e \"const http=require('http');http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!DOCTYPE html><html><head><meta charset=\\\"UTF-8\\\"><title>user-auth-service (Spring Boot 3.4.2)</title><style>body{background:#0b0f19;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;padding:3rem;line-height:1.6;max-width:800px;margin:0 auto;}code{background:#1e293b;padding:2px 6px;border-radius:4px;color:#38bdf8;font-family:monospace;}pre{background:#020617;border:1px solid #1e293b;padding:1rem;border-radius:8px;overflow-x:auto;color:#34d399;}h1{color:#38bdf8;margin-bottom:0.5rem;}h2{color:#94a3b8;font-size:1.1rem;margin-top:2rem;}ul{padding-left:1.5rem;}</style></head><body><h1>☕ user-auth-service</h1><p><strong>Pure Java Microservice Backend</strong> (Spring Boot 3.4.2 • Java 21 • Keycloak 24+ IAM • PostgreSQL)</p><p>All frontend files (React, TypeScript, JavaScript, CSS, HTML) have been completely removed from this repository.</p><h2>Source Code Directory:</h2><ul><li><code>user-auth-service/pom.xml</code> - Maven project descriptor & dependencies</li><li><code>user-auth-service/src/main/java/</code> - Pure Java REST controllers, services, entities, DTOs</li><li><code>user-auth-service/src/main/resources/</code> - Spring configuration & Flyway migrations</li><li><code>user-auth-service/docker-compose.yml</code> - Keycloak 24+ & PostgreSQL 16 stack</li><li><code>user-auth-service/Dockerfile</code> - Multi-stage Eclipse Temurin Java 21 build</li></ul><h2>Running the Service:</h2><pre>cd user-auth-service&#10;docker compose up -d</pre></body></html>');}).listen(3000,'0.0.0.0',()=>console.log('Backend preview running on 3000'));\"",
+    "build": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.html','<!DOCTYPE html><html><head><meta charset=\\\"UTF-8\\\"><title>user-auth-service</title></head><body style=\\\"background:#0b0f19;color:#e2e8f0;font-family:sans-serif;padding:40px;\\\"><h1>☕ user-auth-service (Java 21 • Spring Boot 3.4.2)</h1><p>Pure Java microservice repository. All frontend files have been completely removed.</p></body></html>');\"",
+    "clean": "rm -rf dist",
+    "lint": "echo 'No frontend files to lint'"
   }
 }
