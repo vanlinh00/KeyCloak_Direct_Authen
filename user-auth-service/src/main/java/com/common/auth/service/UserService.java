@@ -1,7 +1,10 @@
 package com.common.auth.service;
 
 import com.common.auth.config.KeycloakAdminConfig;
+import com.common.auth.dto.request.ChangePasswordRequest;
+import com.common.auth.dto.request.LoginRequest;
 import com.common.auth.dto.request.RegisterRequest;
+import com.common.auth.dto.request.UpdateAccountRequest;
 import com.common.auth.dto.request.UpdateProfileRequest;
 import com.common.auth.dto.response.UserProfileResponse;
 import com.common.auth.entity.UserProfile;
@@ -15,6 +18,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.keycloak.admin.client.Keycloak;
 import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.admin.client.resource.UserResource;
 import org.keycloak.admin.client.resource.UsersResource;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
@@ -39,6 +43,7 @@ public class UserService {
     private final Keycloak keycloakAdminClient;
     private final UserProfileRepository userProfileRepository;
     private final SecurityUtils securityUtils;
+    private final AuthService authService;
 
     /**
      * Registers a new user across both Keycloak (IAM credentials & access attributes)
@@ -171,6 +176,106 @@ public class UserService {
         UUID userId = securityUtils.getCurrentUserUuid();
         Jwt jwt = securityUtils.getCurrentJwt();
         return updateMe(userId, request, jwt);
+    }
+
+    /**
+     * Changes password for the currently authenticated user.
+     * Verifies current password before resetting via Keycloak Admin API.
+     */
+    public void changePassword(ChangePasswordRequest request) {
+        if (!request.getNewPassword().equals(request.getConfirmationPassword())) {
+            throw new IllegalArgumentException("New password and confirmation password do not match");
+        }
+
+        if (request.getCurrentPassword().equals(request.getNewPassword())) {
+            throw new IllegalArgumentException("New password cannot be the same as current password");
+        }
+
+        UUID userId = securityUtils.getCurrentUserUuid();
+        String username = securityUtils.getCurrentUsername();
+
+        // 1. Verify current credentials against Keycloak token endpoint
+        log.info("Verifying current password credentials for user: {}", username);
+        authService.login(LoginRequest.builder()
+                .loginId(username)
+                .password(request.getCurrentPassword())
+                .build());
+
+        // 2. Set new permanent password in Keycloak
+        CredentialRepresentation credential = new CredentialRepresentation();
+        credential.setType(CredentialRepresentation.PASSWORD);
+        credential.setValue(request.getNewPassword());
+        credential.setTemporary(false);
+
+        try {
+            keycloakAdminClient.realm(keycloakConfig.getRealm())
+                    .users()
+                    .get(userId.toString())
+                    .resetPassword(credential);
+            log.info("Password changed successfully in Keycloak for userId: {}", userId);
+        } catch (Exception e) {
+            log.error("Failed to reset password in Keycloak for userId {}: {}", userId, e.getMessage(), e);
+            throw new KeycloakIntegrationException("Failed to update password in Keycloak: " + e.getMessage(), 500);
+        }
+    }
+
+    /**
+     * Updates full name and/or email (Gmail) in Keycloak IAM for the authenticated user.
+     */
+    public UserProfileResponse updateAccount(UpdateAccountRequest request) {
+        boolean hasFullName = request.getFullName() != null && !request.getFullName().isBlank();
+        boolean hasEmail = request.getEmail() != null && !request.getEmail().isBlank();
+
+        if (!hasFullName && !hasEmail) {
+            throw new IllegalArgumentException("At least one field (fullName or email) must be provided for update");
+        }
+
+        UUID userId = securityUtils.getCurrentUserUuid();
+        log.info("Updating Keycloak account details (fullName/email) for user: {}", userId);
+
+        UsersResource usersResource = keycloakAdminClient.realm(keycloakConfig.getRealm()).users();
+        UserResource userResource = usersResource.get(userId.toString());
+        UserRepresentation userRep;
+
+        try {
+            userRep = userResource.toRepresentation();
+        } catch (Exception e) {
+            log.error("Could not fetch user representation from Keycloak for userId {}: {}", userId, e.getMessage(), e);
+            throw new ResourceNotFoundException("User not found in Keycloak IAM for ID: " + userId);
+        }
+
+        // Update email if provided and changed
+        if (hasEmail) {
+            String newEmail = request.getEmail().trim().toLowerCase();
+            if (!newEmail.equalsIgnoreCase(userRep.getEmail())) {
+                List<UserRepresentation> existingUsers = usersResource.searchByEmail(newEmail, true);
+                boolean emailTaken = existingUsers.stream()
+                        .anyMatch(u -> !u.getId().equals(userId.toString()));
+                if (emailTaken) {
+                    throw new UserAlreadyExistsException("Email address '" + newEmail + "' is already registered to another user");
+                }
+                userRep.setEmail(newEmail);
+            }
+        }
+
+        // Update full name if provided
+        if (hasFullName) {
+            String[] parts = request.getFullName().trim().split("\\s+", 2);
+            userRep.setFirstName(parts[0]);
+            userRep.setLastName(parts.length > 1 ? parts[1] : "");
+        }
+
+        try {
+            userResource.update(userRep);
+            log.info("Successfully updated Keycloak user representation for userId: {}", userId);
+        } catch (UserAlreadyExistsException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to update Keycloak user representation for userId {}: {}", userId, e.getMessage(), e);
+            throw new KeycloakIntegrationException("Failed to update account in Keycloak: " + e.getMessage(), 500);
+        }
+
+        return getMe();
     }
 
     /**

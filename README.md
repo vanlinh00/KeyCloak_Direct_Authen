@@ -62,6 +62,8 @@ During `POST /api/v1/users/register`, the service coordinates between Keycloak's
 - `POST /api/v1/users/register`: Executes dual-store onboarding with compensation rollback.
 - `GET /api/v1/users/me`: Enriched profile combining JWT claims + PostgreSQL profile attributes.
 - `PUT /api/v1/users/me`: Updates domain fields in PostgreSQL `mydb.user_profiles`.
+- `PUT /api/v1/users/me/password`: Changes authenticated user's password (verifies current password).
+- `PUT /api/v1/users/me/account`: Updates user full name (`firstName`, `lastName`) and email / Gmail in Keycloak IAM.
 
 ---
 

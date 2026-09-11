@@ -1,6 +1,8 @@
 package com.common.auth.controller;
 
+import com.common.auth.dto.request.ChangePasswordRequest;
 import com.common.auth.dto.request.RegisterRequest;
+import com.common.auth.dto.request.UpdateAccountRequest;
 import com.common.auth.dto.request.UpdateProfileRequest;
 import com.common.auth.dto.response.ApiResponse;
 import com.common.auth.dto.response.UserProfileResponse;
@@ -67,5 +69,33 @@ public class UserController {
         log.info("PUT /me requested for current authenticated user");
         UserProfileResponse response = userService.updateMe(request);
         return ResponseEntity.ok(ApiResponse.success("User profile updated successfully in PostgreSQL", response));
+    }
+
+    @PutMapping("/me/password")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(
+            summary = "Change current authenticated user's password",
+            description = "Validates the current password against Keycloak IAM and securely updates to the new password.",
+            security = @SecurityRequirement(name = "KeycloakBearerAuth")
+    )
+    public ResponseEntity<ApiResponse<Void>> changePassword(
+            @Valid @RequestBody ChangePasswordRequest request) {
+        log.info("Password change requested for current authenticated user");
+        userService.changePassword(request);
+        return ResponseEntity.ok(ApiResponse.success("Password changed successfully", null));
+    }
+
+    @PutMapping("/me/account")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(
+            summary = "Update current user's full name and email / Gmail",
+            description = "Updates user identity details in Keycloak IAM (firstName, lastName, email/Gmail).",
+            security = @SecurityRequirement(name = "KeycloakBearerAuth")
+    )
+    public ResponseEntity<ApiResponse<UserProfileResponse>> updateAccount(
+            @Valid @RequestBody UpdateAccountRequest request) {
+        log.info("Account identity update (fullName/email) requested for current authenticated user");
+        UserProfileResponse response = userService.updateAccount(request);
+        return ResponseEntity.ok(ApiResponse.success("Account identity updated successfully in Keycloak", response));
     }
 }
