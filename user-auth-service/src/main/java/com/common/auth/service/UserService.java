@@ -9,6 +9,7 @@ import com.common.auth.exception.KeycloakIntegrationException;
 import com.common.auth.exception.ResourceNotFoundException;
 import com.common.auth.exception.UserAlreadyExistsException;
 import com.common.auth.repository.UserProfileRepository;
+import com.common.auth.security.SecurityUtils;
 import jakarta.ws.rs.core.Response;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +38,7 @@ public class UserService {
     private final KeycloakAdminConfig keycloakConfig;
     private final Keycloak keycloakAdminClient;
     private final UserProfileRepository userProfileRepository;
+    private final SecurityUtils securityUtils;
 
     /**
      * Registers a new user across both Keycloak (IAM credentials & access attributes)
@@ -147,6 +149,28 @@ public class UserService {
         }
 
         return buildUserProfileResponse(userRep, profile, userId);
+    }
+
+    /**
+     * Retrieves current user profile for the authenticated context.
+     * Extracts user UUID and active JWT directly via injected SecurityUtils.
+     */
+    @Transactional(readOnly = true)
+    public UserProfileResponse getMe() {
+        UUID userId = securityUtils.getCurrentUserUuid();
+        Jwt jwt = securityUtils.getCurrentJwt();
+        return getMe(userId, jwt);
+    }
+
+    /**
+     * Updates extended domain profile fields in PostgreSQL mydb.user_profiles
+     * for the currently authenticated user extracted from SecurityUtils.
+     */
+    @Transactional
+    public UserProfileResponse updateMe(UpdateProfileRequest request) {
+        UUID userId = securityUtils.getCurrentUserUuid();
+        Jwt jwt = securityUtils.getCurrentJwt();
+        return updateMe(userId, request, jwt);
     }
 
     /**

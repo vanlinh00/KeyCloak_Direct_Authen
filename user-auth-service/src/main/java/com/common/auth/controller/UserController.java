@@ -13,16 +13,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/users")
@@ -46,30 +43,29 @@ public class UserController {
     }
 
     @GetMapping("/me")
+    @PreAuthorize("isAuthenticated()")
     @Operation(
             summary = "Get current authenticated user profile",
             description = "Combines standard JWT claims (sub, email, preferred_username, roles) with extended domain fields from PostgreSQL mydb.user_profiles.",
             security = @SecurityRequirement(name = "KeycloakBearerAuth")
     )
-    public ResponseEntity<ApiResponse<UserProfileResponse>> getMe(@AuthenticationPrincipal Jwt jwt) {
-        UUID userId = UUID.fromString(jwt.getSubject());
-        log.info("GET /me requested for sub/userId: {}", userId);
-        UserProfileResponse response = userService.getMe(userId, jwt);
+    public ResponseEntity<ApiResponse<UserProfileResponse>> getMe() {
+        log.info("GET /me requested for current authenticated user");
+        UserProfileResponse response = userService.getMe();
         return ResponseEntity.ok(ApiResponse.success("User profile fetched successfully", response));
     }
 
     @PutMapping("/me")
+    @PreAuthorize("isAuthenticated()")
     @Operation(
             summary = "Update current user domain profile",
             description = "Updates domain profile records in PostgreSQL mydb.user_profiles for the authenticated user.",
             security = @SecurityRequirement(name = "KeycloakBearerAuth")
     )
     public ResponseEntity<ApiResponse<UserProfileResponse>> updateMe(
-            @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody UpdateProfileRequest request) {
-        UUID userId = UUID.fromString(jwt.getSubject());
-        log.info("PUT /me requested for sub/userId: {}", userId);
-        UserProfileResponse response = userService.updateMe(userId, request, jwt);
+        log.info("PUT /me requested for current authenticated user");
+        UserProfileResponse response = userService.updateMe(request);
         return ResponseEntity.ok(ApiResponse.success("User profile updated successfully in PostgreSQL", response));
     }
 }
