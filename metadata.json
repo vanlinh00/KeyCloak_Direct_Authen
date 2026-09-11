@@ -1,0 +1,6 @@
+{
+  "name": "User Auth Service (Spring Boot 3.4.2 & Keycloak 24)",
+  "description": "Production-ready Spring Boot 3.4.2 authentication and user management microservice integrating Keycloak 24+ and PostgreSQL dual-data architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

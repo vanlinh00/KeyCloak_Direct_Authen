@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL (mydb) - Database for Extended Domain User Profiles
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: user-auth-postgres
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Keycloak 24 IAM Provider
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.5
+    container_name: user-auth-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: adminpassword
+      KC_HTTP_PORT: 8081
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./keycloak-realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8081; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 3. User Auth Microservice
+  user-auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: user-auth-service
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/mydb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgrespassword
+      KEYCLOAK_AUTH_SERVER_URL: http://keycloak:8081
+      KEYCLOAK_REALM: microservices-realm
+      KEYCLOAK_CLIENT_ID: user-auth-service
+      KEYCLOAK_CLIENT_SECRET: service-secret-placeholder
+      KEYCLOAK_ADMIN_USERNAME: admin
+      KEYCLOAK_ADMIN_PASSWORD: adminpassword
+
+volumes:
+  postgres_data:
