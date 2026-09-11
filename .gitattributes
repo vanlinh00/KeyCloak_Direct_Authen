@@ -1,0 +1,10 @@
+# Exclude non-Java project harness and preview assets from GitHub language statistics
+index.html linguist-detectable=false
+package.json linguist-detectable=false
+bun.lock linguist-detectable=false
+vite.config.js linguist-detectable=false
+src/** linguist-detectable=false
+public/** linguist-detectable=false
+metadata.json linguist-detectable=false
+.env.example linguist-detectable=false
+README.md linguist-documentation=true
