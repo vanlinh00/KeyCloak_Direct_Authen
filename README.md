@@ -1,6 +1,6 @@
 # user-auth-service
 
-Production-ready **Authentication and User Management Microservice** built with **Spring Boot 3.4.2**, **Java 21**, **Keycloak 24+**, and **PostgreSQL** (`mydb`).
+Production-ready **Authentication and User Management Microservice** built with **Spring Boot 3.4.2**, **Java 17**, **Keycloak 24+**, and **PostgreSQL** (`mydb`).
 
 ---
 

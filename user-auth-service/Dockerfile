@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for user-auth-service
-# Stage 1: Build application with Maven and Java 21
-FROM eclipse-temurin:21-jdk-alpine AS builder
+# Stage 1: Build application with Maven and Java 17
+FROM eclipse-temurin:17-jdk-alpine AS builder
 WORKDIR /workspace
 
 # Cache dependency layer
@@ -14,7 +14,7 @@ COPY src src
 RUN ./mvnw clean package -DskipTests
 
 # Stage 2: Minimal Distroless / JRE Runtime
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
