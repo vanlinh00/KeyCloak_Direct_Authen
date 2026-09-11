@@ -1,0 +1,75 @@
+{
+  "realm": "microservices-realm",
+  "enabled": true,
+  "displayName": "Microservices Security Realm",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "roles": {
+    "realm": [
+      {
+        "name": "ADMIN",
+        "description": "Administrator with full system privileges"
+      },
+      {
+        "name": "USER",
+        "description": "Standard application user"
+      },
+      {
+        "name": "MANAGER",
+        "description": "Operations manager with elevated access"
+      }
+    ],
+    "client": {
+      "user-auth-service": [
+        {
+          "name": "ADMIN",
+          "description": "Client administrator role"
+        },
+        {
+          "name": "USER",
+          "description": "Client user role"
+        },
+        {
+          "name": "MANAGER",
+          "description": "Client manager role"
+        }
+      ]
+    }
+  },
+  "defaultRoles": [
+    "USER"
+  ],
+  "clients": [
+    {
+      "clientId": "user-auth-service",
+      "name": "User Auth Microservice",
+      "description": "Backend resource server and authentication client",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "service-secret-placeholder",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "roles",
+        "profile",
+        "email"
+      ]
+    }
+  ]
+}
