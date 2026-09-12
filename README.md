@@ -79,22 +79,17 @@ During `POST /api/v1/users/register`, the service coordinates between Keycloak's
 
 ---
 
-## 4. Fine-Grained Authorization (FGA) Architecture (Hybrid DB + Redis)
+## 4. Fine-Grained Authorization (FGA) — Hybrid DB + Redis
 
-To support **1,000+ custom action permissions** without bloating JWT header sizes or exceeding HTTP 8KB cookie/header limits:
-1. **JWT Kept Lean**: Keycloak issues JWTs containing only high-level coarse roles (e.g. `realm_access.roles: ["MANAGER"]`).
-2. **PostgreSQL Relational Storage**: `roles`, `permissions`, and `role_permissions` store detailed granular permissions.
-3. **Redis Cache (SUNION Aggregation)**:
-   - Cache key format: `role:permissions:{ROLE_NAME}` stored as a **Redis Set** with a 24h TTL.
-   - When a user performs an action, `PermissionChecker` extracts user roles from the JWT and calls `SUNION` across all active roles in Redis in O(1) time.
-   - On cache miss, permissions are loaded from PostgreSQL, cached into Redis, and aggregated.
-   - Any permission mutation via `RolePermissionController` instantly evicts the affected role cache key.
-4. **Method Security Evaluator**:
-   Controllers or services protect sensitive business logic with:
-   ```java
-   @PreAuthorize("@permissionChecker.hasPermission('invoice:export-pdf')")
-   public ResponseEntity<?> exportInvoicePdf(...) { ... }
-   ```
+To manage **1,000+ granular action permissions** without inflating Keycloak JWT size or exceeding HTTP header limits:
+
+- **Lean JWTs (Keycloak)**: Tokens carry only coarse roles (e.g., `MANAGER`, `ADMIN`).
+- **Relational Storage (PostgreSQL)**: Stores granular permissions (`code`, `module`) mapped to roles in `role_permissions`.
+- **Fast Authorization Cache (Redis)**: Caches role permissions as Redis Sets (`role:permissions:{ROLE}`) with a 24h TTL. Multi-role permissions are resolved in $O(1)$ time via `SUNION`. Write operations auto-evict the cache.
+- **Method Security**: Enforced declaratively via Spring Security:
+  ```java
+  @PreAuthorize("@permissionChecker.hasPermission('invoice:export-pdf')")
+  ```
 
 ---
 
@@ -111,7 +106,7 @@ To support **1,000+ custom action permissions** without bloating JWT header size
 
 ---
 
-## 5. Quickstart with Docker Compose
+## 6. Quickstart with Docker Compose
 
 ```bash
 cd user-auth-service
