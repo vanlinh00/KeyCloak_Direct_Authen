@@ -1,10 +1,7 @@
 package com.common.auth.service;
 
-import com.common.auth.repository.PermissionRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -17,19 +14,35 @@ import java.util.stream.Collectors;
 
 /**
  * High-performance Redis caching layer for Fine-Grained Authorization (FGA).
- * Stores role-to-permission mappings as Redis Sets with 24-hour TTL and SUNION aggregations.
+ * Stores role-to-permission mappings as Redis Sets with 24-hour TTL and evaluates permissions
+ * using server-side O(1) SUNION aggregations across user roles.
  */
-@Service
-@RequiredArgsConstructor
 @Slf4j
 public class PermissionCacheService {
 
-    private static final String KEY_PREFIX = "role:permissions:";
-    private static final String EMPTY_SENTINEL = "__EMPTY__";
-    private static final Duration CACHE_TTL = Duration.ofHours(24);
+    public static final String KEY_PREFIX = "role:permissions:";
+    public static final String EMPTY_SENTINEL = "__EMPTY__";
+    public static final Duration DEFAULT_CACHE_TTL = Duration.ofHours(24);
 
     private final StringRedisTemplate redisTemplate;
-    private final PermissionRepository permissionRepository;
+    private final PermissionFallbackProvider fallbackProvider;
+    private final Duration cacheTtl;
+
+    public PermissionCacheService(StringRedisTemplate redisTemplate) {
+        this(redisTemplate, null, DEFAULT_CACHE_TTL);
+    }
+
+    public PermissionCacheService(StringRedisTemplate redisTemplate, PermissionFallbackProvider fallbackProvider) {
+        this(redisTemplate, fallbackProvider, DEFAULT_CACHE_TTL);
+    }
+
+    public PermissionCacheService(StringRedisTemplate redisTemplate, 
+                                  PermissionFallbackProvider fallbackProvider, 
+                                  Duration cacheTtl) {
+        this.redisTemplate = redisTemplate;
+        this.fallbackProvider = fallbackProvider;
+        this.cacheTtl = cacheTtl != null ? cacheTtl : DEFAULT_CACHE_TTL;
+    }
 
     /**
      * Builds the standard Redis key format: role:permissions:{role_name}
@@ -40,7 +53,7 @@ public class PermissionCacheService {
 
     /**
      * Retrieves aggregated permissions for a collection of roles using Redis SUNION.
-     * On cache miss for any role, fetches from the database, caches to Redis, and unions.
+     * On cache miss for any role, attempts to populate from the fallback provider if configured.
      *
      * @param roleNames list of high-level user roles (e.g. ["ADMIN", "MANAGER"])
      * @return Set of fine-grained permission action codes (e.g. ["invoice:export-pdf", "user:delete"])
@@ -50,7 +63,7 @@ public class PermissionCacheService {
             return Collections.emptySet();
         }
 
-        // Normalize roles: uppercase, remove leading/trailing whitespace
+        // Normalize roles: uppercase, trim whitespace
         List<String> normalizedRoles = roleNames.stream()
                 .filter(r -> r != null && !r.isBlank())
                 .map(r -> r.trim().toUpperCase())
@@ -69,9 +82,10 @@ public class PermissionCacheService {
                 Boolean keyExists = redisTemplate.hasKey(key);
 
                 if (Boolean.FALSE.equals(keyExists)) {
-                    // Cache Miss: populate this role from PostgreSQL
-                    log.debug("Redis cache miss for role '{}', querying database", role);
-                    populateRoleCache(role);
+                    log.debug("Redis cache miss for role '{}'", role);
+                    if (fallbackProvider != null) {
+                        populateRoleCacheFromFallback(role);
+                    }
                 }
                 keysToUnion.add(key);
             }
@@ -90,6 +104,10 @@ public class PermissionCacheService {
             }
 
             if (rawResult == null || rawResult.isEmpty()) {
+                if (fallbackProvider != null) {
+                    log.debug("No permissions found in Redis for roles {}, querying fallback provider", normalizedRoles);
+                    return fallbackProvider.getPermissionsForRoles(normalizedRoles);
+                }
                 return Collections.emptySet();
             }
 
@@ -99,24 +117,34 @@ public class PermissionCacheService {
                     .collect(Collectors.toSet());
 
         } catch (Exception ex) {
-            log.warn("Redis operation failed while resolving permissions for roles {}: {}. Falling back to PostgreSQL DB query.",
+            log.warn("Redis operation failed while resolving permissions for roles {}: {}. Attempting fallback provider.",
                     normalizedRoles, ex.getMessage());
-            return permissionRepository.findCodesByRoleNames(normalizedRoles);
+            if (fallbackProvider != null) {
+                try {
+                    return fallbackProvider.getPermissionsForRoles(normalizedRoles);
+                } catch (Exception fallbackEx) {
+                    log.error("Permission fallback provider query failed: {}", fallbackEx.getMessage(), fallbackEx);
+                }
+            }
+            return Collections.emptySet();
         }
     }
 
     /**
-     * Populates the Redis cache Set for a specific role with a 24-hour TTL.
+     * Populates the Redis cache Set for a specific role with the given permissions and a 24-hour TTL.
      *
      * @param roleName role name in uppercase
-     * @return the set of permissions populated in Redis
+     * @param permissions collection of permission action codes
      */
-    public Set<String> populateRoleCache(String roleName) {
-        String key = buildKey(roleName);
-        Set<String> permissions = permissionRepository.findCodesByRoleName(roleName);
+    public void populateRoleCache(String roleName, Collection<String> permissions) {
+        if (roleName == null || roleName.isBlank()) {
+            return;
+        }
+        String normalizedRole = roleName.trim().toUpperCase();
+        String key = buildKey(normalizedRole);
 
         try {
-            // Clear existing key before refreshing
+            // Delete key first to avoid stale entries
             redisTemplate.delete(key);
 
             if (permissions != null && !permissions.isEmpty()) {
@@ -125,14 +153,24 @@ public class PermissionCacheService {
                 // Store sentinel to prevent cache penetration
                 redisTemplate.opsForSet().add(key, EMPTY_SENTINEL);
             }
-            redisTemplate.expire(key, CACHE_TTL);
+            redisTemplate.expire(key, cacheTtl);
             log.debug("Populated Redis cache for role '{}' with {} permissions, TTL={}",
-                    roleName, permissions != null ? permissions.size() : 0, CACHE_TTL);
+                    normalizedRole, permissions != null ? permissions.size() : 0, cacheTtl);
         } catch (Exception ex) {
-            log.warn("Failed to write permissions for role '{}' into Redis: {}", roleName, ex.getMessage());
+            log.warn("Failed to write permissions for role '{}' into Redis: {}", normalizedRole, ex.getMessage());
         }
+    }
 
-        return permissions != null ? permissions : Collections.emptySet();
+    private void populateRoleCacheFromFallback(String roleName) {
+        if (fallbackProvider == null) {
+            return;
+        }
+        try {
+            Set<String> perms = fallbackProvider.getPermissionsForRole(roleName);
+            populateRoleCache(roleName, perms);
+        } catch (Exception e) {
+            log.warn("Failed to load permissions from fallback provider for role '{}': {}", roleName, e.getMessage());
+        }
     }
 
     /**

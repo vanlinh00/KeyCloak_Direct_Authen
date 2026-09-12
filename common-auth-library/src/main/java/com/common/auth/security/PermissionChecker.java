@@ -35,7 +35,7 @@ public class PermissionChecker {
      * Checks if the currently authenticated user possesses the required fine-grained permission.
      *
      * @param permissionCode required permission action code (e.g. "invoice:export-pdf")
-     * @return true if allowed; false will trigger Spring Security AccessDeniedException (HTTP 403)
+     * @return true if allowed; false triggers Spring Security AccessDeniedException (HTTP 403)
      */
     public boolean hasPermission(String permissionCode) {
         if (permissionCode == null || permissionCode.isBlank()) {
@@ -56,13 +56,13 @@ public class PermissionChecker {
             return false;
         }
 
-        // Check if user has global super-admin role
+        // Global super-admin bypass
         if (roles.contains("ADMIN")) {
             log.debug("Granting permission '{}' due to 'ADMIN' super-role", permissionCode);
             return true;
         }
 
-        // Query Redis Cache layer (SUNION across all roles)
+        // Query Redis Cache layer (SUNION across all user roles)
         Set<String> effectivePermissions = permissionCacheService.getPermissionsForRoles(new ArrayList<>(roles));
         String targetPermission = permissionCode.trim().toLowerCase();
 
@@ -100,10 +100,10 @@ public class PermissionChecker {
     }
 
     /**
-     * Intercepts Authentication and extracts high-level Keycloak roles from:
+     * Extracts high-level Keycloak roles from:
      * 1. JWT 'realm_access.roles'
      * 2. JWT 'resource_access.*.roles'
-     * 3. GrantedAuthority objects (with or without 'ROLE_' prefix)
+     * 3. Spring Security GrantedAuthorities (with or without 'ROLE_' prefix)
      */
     public Set<String> extractRoles(Authentication authentication) {
         Set<String> roles = new HashSet<>();
