@@ -1,117 +1,128 @@
-# user-auth-service
+# user-auth-service — Architecture Specification
 
-Production-ready **Authentication and User Management Microservice** built with **Spring Boot 3.4.2**, **Java 17**, **Keycloak 24+**, and **PostgreSQL** (`mydb`).
+This service implements two foundational architectures: a **Split-Database Strategy with Distributed Saga Compensation** for identity/profile decoupling, and a **Hybrid DB + Redis Fine-Grained Authorization (FGA)** engine to support 1,000+ dynamic permissions without JWT token bloat.
 
 ---
 
-## 1. Architectural Overview & Split-Database Strategy
+## 1. Split-Database Strategy & Distributed Saga
 
-To ensure zero lock-in to IAM credentials while maintaining full regulatory and domain flexibility, the service strictly divides identity and profile records across two distinct persistence tiers:
+### 1.1 Architectural Separation
+To prevent IAM vendor lock-in and isolate sensitive domain data from the auth directory, persistence is partitioned into two distinct tiers:
 
 ```
-                      [ Client Applications ]
-                                 |
-                                 v
-                     [ user-auth-service (8080) ]
-                     /                         \
-         (OAuth2 / Admin API)             (JDBC / JPA)
-                   /                             \
-                  v                               v
-        +-------------------+           +-----------------------+
-        |   Keycloak 24+    |           |  PostgreSQL (mydb)    |
-        | (Identity Store)  |           | (Domain User Profile) |
-        +-------------------+           +-----------------------+
+                      ┌───────────────────────────┐
+                      │    user-auth-service      │
+                      └─────────────┬─────────────┘
+                                    │
+            ┌───────────────────────┴───────────────────────┐
+            │ (OAuth2 / Admin API)                          │ (JPA / JDBC)
+            ▼                                               ▼
+┌───────────────────────┐                       ┌───────────────────────┐
+│     Keycloak 24+      │                       │   PostgreSQL (mydb)   │
+│    (Identity Store)   │                       │ (Domain User Profile) │
+├───────────────────────┤                       ├───────────────────────┤
+│ • username (login_id) │                       │ • id (UUID from IAM)  │
+│ • credentials (hash)  │                       │ • gender, DOB, height │
+│ • email & verified    │                       │ • insurance card info │
+│ • enabled (!deleted)  │                       │ • group_id, points    │
+│ • access date ranges  │                       │ • audit timestamps    │
+└───────────────────────┘                       └───────────────────────┘
 ```
 
-### Data Split Mapping Matrix
-| Field Name | Storage Location | Keycloak / DB Column | Rationale & Handling |
-|---|---|---|---|
-| `login_id` | Keycloak DB | `username` | Unique identity login credential |
-| `initial_password` | Keycloak DB | `credentials.password` | Stored with `temporary = true` (forces password update on 1st login) |
-| `is_confirmed` | Keycloak DB | `emailVerified` (Boolean) | Standard OIDC claim |
-| `is_deleted` | Keycloak DB | `enabled` (`!is_deleted`) | Disabling identity locks session without deleting audit records |
-| `id` | Keycloak DB & PostgreSQL | `sub` (UUID) / `id` (PK) | Shared UUID primary key linking IAM identity to domain profile |
-| `full_name` | Keycloak DB | `firstName` / `lastName` | Standard OpenID Connect profile claims |
-| `email` | Keycloak DB | `email` | Identity communication & reset anchor |
-| `created_at` | Keycloak DB | `createdTimestamp` | Identity registration timestamp |
-| `access_start_date` | Keycloak DB | Custom attribute `user.attributes` | Time-bounded role / system access start |
-| `access_end_date` | Keycloak DB | Custom attribute `user.attributes` | Time-bounded role / system access end |
-| **Health Profile Data** | PostgreSQL `mydb.user_profiles` | `gender`, `date_of_birth`, `height_cm`, `insured_card_number`, `insured_card_expiration` | Sensitive domain data kept isolated from IAM directory |
-| **App & Rewards Data** | PostgreSQL `mydb.user_profiles` | `group_id`, `point`, `point_received_date`, `reg_verify_status`, `previous_state`, `nick_name` | Domain business state and loyalty tracking |
-| **Audit Metadata** | PostgreSQL `mydb.user_profiles` | `created_at`, `updated_at` | Audited via Spring Data JPA `@CreatedDate` / `@LastModifiedDate` |
+- **Shared UUID Linkage**: Keycloak generates the user's immutable UUID (`sub` claim). This exact UUID is assigned as the primary key (`@Id private UUID id`) in PostgreSQL `mydb.user_profiles`. There are no surrogate auto-increment IDs in the domain profile, ensuring deterministic, zero-overhead 1:1 entity resolution.
+
+### 1.2 Registration Saga & Compensation Rollback
+User registration (`POST /api/v1/users/register`) spans Keycloak REST API calls and relational database transactions. Because distributed two-phase commit (2PC) is unavailable across heterogeneous systems, the service executes a **Saga pattern with compensating transactions**:
+
+```
+[Client] ──> RegisterRequest
+                  │
+                  ▼
+          ┌───────────────┐
+          │ Step 1: IAM   │ ──> Keycloak Admin API creates user
+          └───────┬───────┘
+                  │ (Extracts generated UUID)
+                  ▼
+          ┌───────────────┐
+          │ Step 2: DB    │ ──> Save UserProfile in PostgreSQL
+          └───────┬───────┘
+                  ├─── Success ──> Commit & Return 201 Created
+                  │
+                  └─── Failure (DB constraint / timeout / error)
+                          │
+                          ▼
+                  ┌───────────────┐
+                  │ Compensate    │ ──> keycloakAdminClient.users().get(uuid).remove()
+                  └───────────────┘     (Purges orphaned Keycloak identity)
+```
+
+1. **Forward Action (Keycloak)**: The service creates the Keycloak user representation with credentials and temporary password flags, parsing the new user's UUID from the HTTP `Location` response header.
+2. **Forward Action (PostgreSQL)**: The domain profile entity is assembled using the extracted UUID and saved to `user_profiles` via Spring Data JPA.
+3. **Compensating Action (Rollback)**: If PostgreSQL persistence fails (e.g., unique constraint violation, connectivity loss, or data validation failure), a catch block immediately triggers a compensating API call:
+   ```java
+   keycloakAdminClient.realm(realm).users().get(userId.toString()).remove();
+   ```
+   This prevents orphaned "zombie" accounts from polluting Keycloak when the profile cannot be committed.
 
 ---
 
-## 2. Distributed Saga & Compensation Rollback
+## 2. Fine-Grained Authorization (FGA) — Hybrid DB + Redis
 
-During `POST /api/v1/users/register`, the service coordinates between Keycloak's Admin API and PostgreSQL:
-1. **Step 1**: Identity created in Keycloak -> extracts generated UUID (`sub`).
-2. **Step 2**: Domain profile saved into `mydb.user_profiles` with matching UUID.
-3. **Rollback**: If PostgreSQL persistence fails (e.g., constraint error or network timeout), an automatic compensation handler invokes `keycloakAdminClient.realm().users().get(userId).remove()`. This eliminates orphaned "zombie" IAM accounts.
+### 2.1 The JWT Token Bloat Problem
+Encoding hundreds or thousands of granular action permissions (e.g., `invoice:export-pdf`, `report:view-sensitive`) directly into JWT claims introduces severe limitations:
+- Causes HTTP headers to exceed proxy/load balancer size limits (typically 4KB–8KB).
+- Requires revoking and re-issuing tokens whenever permissions are modified.
 
----
+### 2.2 Hybrid Architecture & Data Flow
 
-## 3. Endpoints Specification
+```
+1. Client sends Bearer JWT (contains coarse roles: ["MANAGER"])
+        │
+        ▼
+2. @PreAuthorize("@permissionChecker.hasPermission('invoice:export-pdf')")
+        │
+        ▼
+3. PermissionChecker extracts roles -> ["MANAGER"]
+        │
+        ▼
+4. PermissionCacheService evaluates permissions
+        │
+        ├── [Cache Hit] ──> Redis SUNION across role sets (O(1))
+        │
+        └── [Cache Miss] ─> Query PostgreSQL (role_permissions)
+                                 │
+                                 ├──> Populate Redis Set with 24h TTL
+                                 └──> Return aggregated permissions
+```
 
-### Authentication
-- `POST /api/v1/auth/login`: Direct Access Grant -> Returns `access_token`, `refresh_token`, `expires_in`.
-- `POST /api/v1/auth/refresh`: Exchanges valid `refresh_token` for renewed tokens.
-- `POST /api/v1/auth/logout`: Revokes active user session in Keycloak.
+### 2.3 Storage & Caching Model
+1. **PostgreSQL Relational Schema**:
+   - `roles`: High-level roles matching Keycloak realm/client role names (`name`, e.g., `MANAGER`, `ADMIN`).
+   - `permissions`: Granular action codes (`code`, `module`, e.g., `invoice:export-pdf`, `module="invoice"`).
+   - `role_permissions`: Many-to-many mapping table linking roles to permissions.
+2. **Redis Set Caching**:
+   - **Key Format**: `role:permissions:{ROLE_NAME}` (e.g., `role:permissions:MANAGER`).
+   - **Data Structure**: Redis **Set** storing raw permission code strings.
+   - **Time-to-Live (TTL)**: Configured with a 24-hour expiration.
+   - **Anti-Penetration Sentinel**: Roles with zero assigned permissions store an `__EMPTY__` sentinel to prevent repeated database lookups.
+   - **Resilience Fallback**: If Redis becomes unavailable, the system automatically falls back to direct database joins without blocking authorization.
 
-### User Management
-- `POST /api/v1/users/register`: Executes dual-store onboarding with compensation rollback.
-- `GET /api/v1/users/me`: Enriched profile combining JWT claims + PostgreSQL profile attributes.
-- `PUT /api/v1/users/me`: Updates domain fields in PostgreSQL `mydb.user_profiles`.
-- `PUT /api/v1/users/me/password`: Changes authenticated user's password (verifies current password).
-- `PUT /api/v1/users/me/account`: Updates user full name (`firstName`, `lastName`) and email / Gmail in Keycloak IAM.
-
-### Fine-Grained Authorization (FGA) - Admin & RBAC
-- `GET /api/v1/admin/roles`: Lists all registered system roles and their permissions.
-- `GET /api/v1/admin/roles/{roleName}`: Retrieves a single role with its permissions.
-- `POST /api/v1/admin/roles`: Creates a new role.
-- `GET /api/v1/admin/permissions`: Lists all fine-grained action permissions.
-- `POST /api/v1/admin/permissions`: Creates a new fine-grained action permission (e.g. `invoice:export-pdf`).
-- `POST /api/v1/admin/roles/{roleName}/permissions`: Appends permission codes to a role (auto-invalidates Redis cache).
-- `DELETE /api/v1/admin/roles/{roleName}/permissions`: Removes permission codes from a role (auto-invalidates Redis cache).
-- `PUT /api/v1/admin/roles/{roleName}/permissions`: Overwrites role permissions (auto-invalidates Redis cache).
-- `POST /api/v1/admin/roles/{roleName}/cache/invalidate`: Explicitly invalidates Redis role cache.
-- `GET /api/v1/admin/my-permissions`: Retrieves current user's aggregated effective action permissions.
-
----
-
-## 4. Fine-Grained Authorization (FGA) — Hybrid DB + Redis
-
-To manage **1,000+ granular action permissions** without inflating Keycloak JWT size or exceeding HTTP header limits:
-
-- **Lean JWTs (Keycloak)**: Tokens carry only coarse roles (e.g., `MANAGER`, `ADMIN`).
-- **Relational Storage (PostgreSQL)**: Stores granular permissions (`code`, `module`) mapped to roles in `role_permissions`.
-- **Fast Authorization Cache (Redis)**: Caches role permissions as Redis Sets (`role:permissions:{ROLE}`) with a 24h TTL. Multi-role permissions are resolved in $O(1)$ time via `SUNION`. Write operations auto-evict the cache.
-- **Method Security**: Enforced declaratively via Spring Security:
+### 2.4 O(1) Evaluation & Dynamic Method Security
+- **Multi-Role Aggregation via `SUNION`**: When a user possesses multiple roles (e.g., `["MANAGER", "FINANCE"]`), permissions are evaluated in a single round-trip by computing the union directly on the Redis server:
+  ```java
+  redisTemplate.opsForSet().union("role:permissions:MANAGER", List.of("role:permissions:FINANCE"));
+  ```
+- **Declarative Enforcement**: Protected endpoints use Spring Security expressions evaluated at runtime:
   ```java
   @PreAuthorize("@permissionChecker.hasPermission('invoice:export-pdf')")
+  @GetMapping("/invoices/{id}/export")
+  public ResponseEntity<byte[]> exportInvoice(@PathVariable Long id) { ... }
   ```
+- **Super-Admin Bypass**: The `ADMIN` role is recognized by `PermissionChecker` to automatically grant access without cache or database overhead.
 
----
-
-## 5. Keycloak 24+ Configuration Checklist
-
-1. **Realm**: Create `microservices-realm`.
-2. **Client**: Create client `user-auth-service`:
-   - Client authentication: **ON** (Confidential).
-   - Standard flow: **ON**.
-   - Direct access grants: **ON** (enables `/api/v1/auth/login`).
-   - Service accounts roles: **ON** (allows backend to manage users).
-3. **Service Account Roles**:
-   - Assign `realm-management` client roles: `manage-users`, `query-users`, `view-users`.
-
----
-
-## 6. Quickstart with Docker Compose
-
-```bash
-cd user-auth-service
-docker compose up -d
+### 2.5 Cache Invalidation on Mutation
+Whenever permissions are assigned, removed, or overwritten via the Admin API (`RolePermissionController`), the mutation service updates the database and immediately evicts the affected Redis key:
+```java
+permissionCacheService.invalidateRoleCache(roleName);
 ```
-
-Access Swagger UI: `http://localhost:8080/swagger-ui.html`
-Keycloak Admin Console: `http://localhost:8081` (admin / adminpassword)
+Subsequent requests trigger a fresh read from PostgreSQL and re-populate the cache, guaranteeing immediate consistency across all microservice instances without requiring token re-issuance.
