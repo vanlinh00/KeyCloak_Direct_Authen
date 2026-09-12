@@ -37,7 +37,21 @@ services:
       timeout: 5s
       retries: 10
 
-  # 3. User Auth Microservice
+  # 3. Redis Cache for Fine-Grained Authorization (FGA)
+  redis-cache:
+    image: redis:7-alpine
+    container_name: user-auth-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # 4. User Auth Microservice
   user-auth-service:
     build:
       context: .
@@ -48,12 +62,16 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_started
+      redis-cache:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/mydb
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgrespassword
+      SPRING_DATA_REDIS_HOST: redis-cache
+      SPRING_DATA_REDIS_PORT: 6379
       KEYCLOAK_AUTH_SERVER_URL: http://keycloak:8081
       KEYCLOAK_REALM: microservices-realm
       KEYCLOAK_CLIENT_ID: user-auth-service
@@ -63,3 +81,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

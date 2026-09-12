@@ -65,9 +65,40 @@ During `POST /api/v1/users/register`, the service coordinates between Keycloak's
 - `PUT /api/v1/users/me/password`: Changes authenticated user's password (verifies current password).
 - `PUT /api/v1/users/me/account`: Updates user full name (`firstName`, `lastName`) and email / Gmail in Keycloak IAM.
 
+### Fine-Grained Authorization (FGA) - Admin & RBAC
+- `GET /api/v1/admin/roles`: Lists all registered system roles and their permissions.
+- `GET /api/v1/admin/roles/{roleName}`: Retrieves a single role with its permissions.
+- `POST /api/v1/admin/roles`: Creates a new role.
+- `GET /api/v1/admin/permissions`: Lists all fine-grained action permissions.
+- `POST /api/v1/admin/permissions`: Creates a new fine-grained action permission (e.g. `invoice:export-pdf`).
+- `POST /api/v1/admin/roles/{roleName}/permissions`: Appends permission codes to a role (auto-invalidates Redis cache).
+- `DELETE /api/v1/admin/roles/{roleName}/permissions`: Removes permission codes from a role (auto-invalidates Redis cache).
+- `PUT /api/v1/admin/roles/{roleName}/permissions`: Overwrites role permissions (auto-invalidates Redis cache).
+- `POST /api/v1/admin/roles/{roleName}/cache/invalidate`: Explicitly invalidates Redis role cache.
+- `GET /api/v1/admin/my-permissions`: Retrieves current user's aggregated effective action permissions.
+
 ---
 
-## 4. Keycloak 24+ Configuration Checklist
+## 4. Fine-Grained Authorization (FGA) Architecture (Hybrid DB + Redis)
+
+To support **1,000+ custom action permissions** without bloating JWT header sizes or exceeding HTTP 8KB cookie/header limits:
+1. **JWT Kept Lean**: Keycloak issues JWTs containing only high-level coarse roles (e.g. `realm_access.roles: ["MANAGER"]`).
+2. **PostgreSQL Relational Storage**: `roles`, `permissions`, and `role_permissions` store detailed granular permissions.
+3. **Redis Cache (SUNION Aggregation)**:
+   - Cache key format: `role:permissions:{ROLE_NAME}` stored as a **Redis Set** with a 24h TTL.
+   - When a user performs an action, `PermissionChecker` extracts user roles from the JWT and calls `SUNION` across all active roles in Redis in O(1) time.
+   - On cache miss, permissions are loaded from PostgreSQL, cached into Redis, and aggregated.
+   - Any permission mutation via `RolePermissionController` instantly evicts the affected role cache key.
+4. **Method Security Evaluator**:
+   Controllers or services protect sensitive business logic with:
+   ```java
+   @PreAuthorize("@permissionChecker.hasPermission('invoice:export-pdf')")
+   public ResponseEntity<?> exportInvoicePdf(...) { ... }
+   ```
+
+---
+
+## 5. Keycloak 24+ Configuration Checklist
 
 1. **Realm**: Create `microservices-realm`.
 2. **Client**: Create client `user-auth-service`:
